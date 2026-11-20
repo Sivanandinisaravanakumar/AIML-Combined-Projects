@@ -1,0 +1,11 @@
+stages:
+  train_rsna:
+    cmd: python backend/train_rsna.py
+    deps:
+    - backend/common.py
+    - backend/train_rsna.py
+    outs:
+    - models/rsna_model.pth
+    metrics:
+    - models/rsna_metrics.json:
+        cache: false

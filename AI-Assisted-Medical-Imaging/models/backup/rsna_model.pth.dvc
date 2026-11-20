@@ -1,0 +1,5 @@
+outs:
+- md5: 9beee7f551f8434fff80cc6e46539f28
+  size: 28420648
+  hash: md5
+  path: rsna_model.pth

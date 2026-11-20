@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+storage/*
+!storage/.gitkeep
+data/demo/
+.env
+# data and model weights are tracked with DVC (see README)
+/data/chest_xray
+/models/model.pth
+
+# Local nested repository and experimental files
+/medimaging/
+/backend/train_liver_3d_unet.py
+/models/backup/
+/outputs/
+.env
+
+*.bak

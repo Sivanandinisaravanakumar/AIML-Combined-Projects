@@ -1,0 +1,5 @@
+outs:
+- md5: 7d7bdc1137b6710dda77333b09b9637d
+  size: 628
+  hash: md5
+  path: rsna_metrics.json

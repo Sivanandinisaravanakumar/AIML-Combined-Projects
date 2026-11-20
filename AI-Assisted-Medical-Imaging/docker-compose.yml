@@ -1,0 +1,45 @@
+services:
+  orthanc:
+    image: jodogne/orthanc
+    ports:
+      - "127.0.0.1:8042:8042"
+      - "127.0.0.1:4243:4242"
+    environment:
+      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
+      ORTHANC__AUTHENTICATION_ENABLED: "true"
+      ORTHANC__REGISTERED_USERS: '{"orthanc":"orthanc"}'
+    volumes:
+      - orthanc-data:/var/lib/orthanc/db
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      ORTHANC_URL: http://orthanc:8042
+      ORTHANC_USERNAME: orthanc
+      ORTHANC_PASSWORD: orthanc
+      MODEL_PATH: /app/models/rsna_model.pth
+      STORAGE_DIR: /app/storage
+      RSNA_LABELS_CSV: /app/datasets/stage_2_train_labels.csv
+    volumes:
+      - ./models:/app/models
+      - ./storage:/app/storage
+      - "${RSNA_DATASET_DIR:-./data/rsna}:/app/datasets:ro"
+    depends_on:
+      - orthanc
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  orthanc-data:
