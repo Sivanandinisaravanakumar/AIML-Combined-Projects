@@ -1,0 +1,76 @@
+.venv/
+__pycache__/
+*.pyc
+.mlflow/
+mlruns/
+mlflow.db
+.env
+.DS_Store
+.vscode/
+data/*.csv
+models/fraud_model.joblib
+data/*.csv
+models/fraud_model.joblib
+
+# Keep datasets local - do not upload to GitHub
+/data/
+
+# Additional AIML-01 exclusions
+.venv-feast/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local dashboard data and model backups
+/reports/analyst_cases.csv
+/models/ieee_cis/threshold_backup.json
+
+.venv-1/
+sample.json
+*.backup
+*.backup_*
+*_backup.py
+models/ieee_cis_backup/
+reports/live_drift_logs/
+
+reports/ieee_live_drift_report.html
+reports/evidence/live_monitoring/ieee_live_drift_report.html
+
+reports/ieee_live_drift_report.html
+reports/evidence/live_monitoring/ieee_live_drift_report.html
+mlflow_ieee.db
+mlartifacts/
+
+*.bak*
+*.backup*
+scripts/patch_api_blend.py
+
+# Generated candidate models and local runtime files
+/models/ieee_cis/candidates/
+/reports/kafka_alerts.csv
+/reports/ieee_live_drift_snapshot.json
+/reports/retraining_orchestrator_status.json
+/tunnel.log
+/tunnel_out.log
+/feature_repo/feature_repo/data/registry.db
+
+/models/ieee_cis/candidates/
+/reports/kafka_alerts.csv
+/reports/ieee_live_drift_snapshot.json
+/reports/retraining_orchestrator_status.json
+/tunnel.log
+/tunnel_out.log
+/feature_repo/feature_repo/data/registry.db
+
+# Local MLflow portable tracking
+/mlflow_portable.db
+/mlruns_portable/
+
+# Local test and runtime logs
+*.log
+/reports/kafka_alerts_backup.csv
+/reports/live_retraining_trigger.json
+
+# Local recovery files
+/recovered-requirements.txt
+/requirements-f-rebuild.txt

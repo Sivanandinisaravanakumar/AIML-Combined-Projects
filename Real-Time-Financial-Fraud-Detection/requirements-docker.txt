@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pandas
+xgboost
+kafka-python
+pydantic
+scikit-learn
+
+feast==0.67.0
+joblib
+numpy

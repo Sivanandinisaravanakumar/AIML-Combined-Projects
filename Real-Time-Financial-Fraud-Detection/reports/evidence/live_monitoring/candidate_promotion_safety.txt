@@ -1,0 +1,23 @@
+IEEE-CIS CANDIDATE PROMOTION SAFETY CHECK
+
+Date: 2026-11-08
+
+Drift share: 0.85
+Drift threshold: 0.50
+Orchestrator status: WAITING_FOR_LABELS
+Confirmed labelled rows: 0
+Candidate training allowed: False
+Production model changed: False
+
+Candidate quality gates:
+- PR-AUC >= production baseline
+- Recall >= production baseline
+- F1 >= production baseline
+
+Candidate artifacts are saved separately.
+READY_FOR_PROMOTION is not automatic production deployment.
+
+Production model SHA256:
+980AB4A90F9AAC66BD812D0E9979144EFC8673D9916CA6AC5E00CCBBA0CD58D5
+
+Candidate training and actual promotion have not been executed.

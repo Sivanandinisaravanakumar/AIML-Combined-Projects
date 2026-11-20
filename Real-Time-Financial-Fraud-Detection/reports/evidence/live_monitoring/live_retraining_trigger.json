@@ -1,0 +1,12 @@
+{
+    "dataset": "IEEE-CIS",
+    "monitoring_source": "Kafka streamed transactions",
+    "reference_rows": 10000,
+    "live_rows": 1000,
+    "total_features": 20,
+    "drifted_features": 17,
+    "drift_share": 0.85,
+    "drift_threshold": 0.5,
+    "retraining_required": true,
+    "action": "RETRAINING_REQUESTED"
+}

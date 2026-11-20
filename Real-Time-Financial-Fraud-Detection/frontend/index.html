@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fraud scoring console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#eef1f4;--panel:#fff;--ink:#14202b;--muted:#5d6b78;--line:#cfd7de;--accent:#1f5f8b;--fraud:#b3202f;--ok:#22703f;--track:#dfe5ea}
+@media (prefers-color-scheme:dark){:root{--paper:#0f1720;--panel:#16212c;--ink:#e8eef3;--muted:#93a3b1;--line:#2b3a47;--accent:#6bb0e0;--fraud:#ff6b78;--ok:#58c27d;--track:#223240}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:"Schibsted Grotesk",system-ui,sans-serif;line-height:1.5}
+.wrap{max-width:1040px;margin:0 auto;padding:28px 20px 56px}
+header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px 24px;margin-bottom:28px}
+h1{font-size:26px;margin:0;font-weight:700;letter-spacing:-.01em}
+h2{font-size:16px;margin:0 0 14px;font-weight:700}
+.health{font-size:14px;color:var(--muted)}
+.health b{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--muted);margin-right:8px}
+.health.up b{background:var(--ok)}.health.down b{background:var(--fraud)}
+main{display:grid;grid-template-columns:300px 1fr;gap:36px}
+@media(max-width:760px){main{grid-template-columns:1fr}}
+form{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;align-self:start}
+label{display:block;font-size:14px;margin:12px 0 4px;color:var(--muted)}
+input{width:100%;padding:9px 10px;font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px}
+input:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+.primary{margin-top:18px;width:100%;padding:11px;font:inherit;font-weight:700;color:#fff;background:var(--accent);border:0;border-radius:6px;cursor:pointer}
+@media(prefers-color-scheme:dark){.primary{color:#0f1720}}
+.primary:disabled{opacity:.6;cursor:wait}
+.presets{margin-top:16px;display:flex;flex-direction:column;gap:6px}
+.presets button{font:inherit;font-size:14px;text-align:left;padding:8px 10px;background:none;color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer}
+.presets button:hover{border-color:var(--accent)}
+.verdict{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.verdict .word{font-size:44px;font-weight:700;letter-spacing:-.02em;line-height:1}
+.verdict .word.FRAUD{color:var(--fraud)}.verdict .word.NORMAL{color:var(--ok)}
+.verdict .sub{color:var(--muted);font-size:15px}
+.ruler{position:relative;height:14px;margin:56px 0 42px;background:var(--track);border-radius:7px}
+.fill{position:absolute;left:0;top:0;bottom:0;border-radius:7px;background:var(--ok);width:0;transition:width .5s ease}
+.fill.FRAUD{background:var(--fraud)}
+.tick{position:absolute;top:-10px;bottom:-10px;width:2px;background:var(--ink)}
+.tick span,.mark span{position:absolute;white-space:nowrap;font-size:13px;color:var(--muted)}
+.tick span{top:100%;left:50%;transform:translateX(-50%);margin-top:4px}
+.mark{position:absolute;top:-6px;width:0;transition:left .5s ease}
+.mark::before{content:"";position:absolute;left:-7px;top:0;width:14px;height:26px;border-radius:4px;background:var(--ink)}
+.mark span{bottom:100%;left:0;transform:translateX(-50%);margin-bottom:12px;color:var(--ink);font-weight:700;font-size:15px}
+.xgb{position:absolute;top:2px;width:10px;height:10px;margin-left:-5px;border:2px solid var(--accent);border-radius:50%;background:var(--paper)}
+@media(prefers-reduced-motion:reduce){.fill,.mark{transition:none}}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 20px;margin:0;font-size:15px}
+dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
+.msg{padding:16px;border:1px dashed var(--line);border-radius:8px;color:var(--muted)}
+.msg.err{border-color:var(--fraud);color:var(--fraud)}
+.hist{margin-top:34px}
+.hist .tally{color:var(--muted);font-size:14px;margin:-8px 0 10px}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{font-weight:500;color:var(--muted);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:7px 8px;border-bottom:1px solid var(--line)}
+td.FRAUD{color:var(--fraud);font-weight:700}td.NORMAL{color:var(--ok);font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Fraud scoring console</h1>
+  <div class="health" id="health" role="status"><b></b><span>Checking backend…</span></div>
+</header>
+<main>
+  <form id="f">
+    <h2>Score a transaction</h2>
+    <label for="card">Card key</label><input id="card" value="card_demo_001" required>
+    <label for="amt">Amount</label><input id="amt" type="number" min="0.01" step="0.01" value="150" required>
+    <label for="dt">Transaction time (seconds)</label><input id="dt" type="number" min="0" step="1" value="86400" required>
+    <button class="primary" id="go" type="submit">Score transaction</button>
+    <div class="presets">
+      <button type="button" data-k="11106_missing_missing_missing_missing" data-a="150">Card with graph score</button>
+      <button type="button" data-k="card_demo_001" data-a="150">Card without graph score</button>
+      <button type="button" data-k="card_demo_001" data-a="4999">Large amount</button>
+    </div>
+  </form>
+  <section aria-live="polite">
+    <div id="out" class="msg">Pick a preset or enter a card, then score it. The result shows where the fraud probability sits against the alert threshold.</div>
+    <div class="hist">
+      <h2>This session</h2>
+      <p class="tally" id="tally">Nothing scored yet.</p>
+      <div class="scroll"><table><thead><tr><th>Time</th><th>Card</th><th>Amount</th><th>Probability</th><th>Result</th></tr></thead><tbody id="rows"></tbody></table></div>
+    </div>
+  </section>
+</main>
+</div>
+<script src="config.js"></script>
+<script>
+const API=(window.API_URL||"http://localhost:30082").replace(/\/$/,"");
+const $=id=>document.getElementById(id);
+const hist=[];
+const pct=x=>(Math.min(Math.max(x,0),1)*100).toFixed(1)+"%";
+
+async function health(){
+  const el=$("health"),t=el.querySelector("span");
+  try{
+    const r=await fetch(API+"/",{cache:"no-store"});
+    if(!r.ok)throw new Error(r.status);
+    el.className="health up";t.textContent="Backend reachable";
+  }catch(e){
+    el.className="health down";
+    t.textContent="Backend not reachable. Start the API, or update API_URL in config.js.";
+  }
+}
+
+function row(label,value){
+  const dt=document.createElement("dt"),dd=document.createElement("dd");
+  dt.textContent=label;dd.textContent=value;return [dt,dd];
+}
+
+function render(j){
+  const p=j.fraud_probability,th=j.threshold,out=$("out");
+  out.className="";out.textContent="";
+  const v=document.createElement("div");v.className="verdict";
+  const w=document.createElement("span");w.className="word "+j.label;w.textContent=j.label==="FRAUD"?"Flag as fraud":"Looks normal";
+  const s=document.createElement("span");s.className="sub";s.textContent="Fraud probability "+pct(p)+" against an alert threshold of "+pct(th);
+  v.append(w,s);
+  const ruler=document.createElement("div");ruler.className="ruler";
+  ruler.innerHTML='<div class="fill"></div><div class="tick"><span></span></div><div class="mark"><span></span></div>';
+  ruler.querySelector(".tick").style.left=pct(th);
+  ruler.querySelector(".tick span").textContent="Alert threshold "+pct(th);
+  const mark=ruler.querySelector(".mark");mark.firstElementChild.textContent=pct(p);
+  const fill=ruler.querySelector(".fill");fill.classList.add(j.label);
+  if(j.gnn_used&&typeof j.xgb_probability==="number"){
+    const x=document.createElement("div");x.className="xgb";x.title="Tree model alone: "+pct(j.xgb_probability);
+    x.style.left=pct(j.xgb_probability);ruler.append(x);
+  }
+  const dl=document.createElement("dl");
+  const model=j.gnn_used?"Tree model blended with card graph score":"Tree model only";
+  const items=[["Scored by",model],["Tree model alone",typeof j.xgb_probability==="number"?pct(j.xgb_probability):pct(p)],["Features from",j.feature_source],["Sent to Kafka",j.kafka_status==="MESSAGE_SENT"?"Yes":"No ("+j.kafka_status+")"],["Transaction ID",j.transaction_id]];
+  items.forEach(i=>dl.append(...row(i[0],i[1])));
+  out.append(v,ruler,dl);
+  requestAnimationFrame(()=>{fill.style.width=pct(p);mark.style.left=pct(p)});
+}
+
+function renderHist(){
+  const tb=$("rows");tb.textContent="";
+  hist.slice(0,15).forEach(h=>{
+    const tr=document.createElement("tr");
+    [h.time,h.card,h.amt,pct(h.p),h.label==="FRAUD"?"Flagged":"Normal"].forEach((v,i)=>{
+      const td=document.createElement("td");td.textContent=v;if(i===4)td.className=h.label;tr.append(td);
+    });
+    tb.append(tr);
+  });
+  const n=hist.length,f=hist.filter(h=>h.label==="FRAUD").length;
+  $("tally").textContent=n?n+" scored, "+f+" flagged.":"Nothing scored yet.";
+}
+
+$("f").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const body={card_key:$("card").value.trim(),TransactionDT:Number($("dt").value),TransactionAmt:Number($("amt").value)};
+  const btn=$("go");btn.disabled=true;btn.textContent="Scoring…";
+  try{
+    const r=await fetch(API+"/predict",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok)throw new Error("The API answered "+r.status+": "+(await r.text()).slice(0,160));
+    const j=await r.json();render(j);
+    hist.unshift({time:new Date().toLocaleTimeString(),card:body.card_key.length>26?body.card_key.slice(0,24)+"…":body.card_key,amt:body.TransactionAmt,p:j.fraud_probability,label:j.label});
+    renderHist();health();
+  }catch(err){
+    const out=$("out");out.className="msg err";
+    out.textContent="Could not score this transaction. "+err.message+" Check that the API pod is running and that API_URL in config.js points to it.";
+  }finally{btn.disabled=false;btn.textContent="Score transaction"}
+});
+
+document.querySelectorAll(".presets button").forEach(b=>b.addEventListener("click",()=>{
+  $("card").value=b.dataset.k;$("amt").value=b.dataset.a;$("f").requestSubmit();
+}));
+health();
+</script>
+</body>
+</html>

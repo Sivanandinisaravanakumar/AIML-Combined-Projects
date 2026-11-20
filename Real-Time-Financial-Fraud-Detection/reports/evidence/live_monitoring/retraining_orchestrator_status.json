@@ -1,0 +1,13 @@
+{
+    "dataset": "IEEE-CIS",
+    "drift_share": 0.85,
+    "drift_threshold": 0.5,
+    "retraining_required": true,
+    "labelled_data_available": false,
+    "labelled_rows": 0,
+    "candidate_training_allowed": false,
+    "production_model_changed": false,
+    "status": "WAITING_FOR_LABELS",
+    "reason": "Drift detected, but no new labelled transaction file exists.",
+    "checked_at_utc": "2026-11-08T12:31:25.570060+00:00"
+}
