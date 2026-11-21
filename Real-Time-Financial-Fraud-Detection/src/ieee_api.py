@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import uuid
 import threading
+import subprocess
 
 from kafka import KafkaProducer
 from fastapi import FastAPI, HTTPException
@@ -23,6 +24,8 @@ from xgboost import XGBClassifier
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = ROOT / "models" / "ieee_cis"
 FEAST_REPO = ROOT / "feature_repo" / "feature_repo"
+FEAST_CONFIG = FEAST_REPO / "feature_store.yaml"
+FEAST_REGISTRY = FEAST_REPO / "data" / "registry.db"
 
 
 # --------------------------------------------------
@@ -45,7 +48,85 @@ medians = joblib.load(MODEL_DIR / "numeric_medians.joblib")
 model = XGBClassifier()
 model.load_model(str(MODEL_DIR / "ieee_xgboost.json"))
 
-store = FeatureStore(repo_path=str(FEAST_REPO))
+
+# --------------------------------------------------
+# FEAST INITIALIZATION
+# --------------------------------------------------
+
+def initialize_feast():
+
+    if not FEAST_CONFIG.exists():
+        raise FileNotFoundError(
+            f"Feast configuration not found: {FEAST_CONFIG}"
+        )
+
+    if not FEAST_REPO.exists():
+        raise FileNotFoundError(
+            f"Feast repository not found: {FEAST_REPO}"
+        )
+
+    print("Initializing Feast...")
+    print("Feast repository:", FEAST_REPO)
+
+    try:
+        result = subprocess.run(
+            ["feast", "apply"],
+            cwd=str(FEAST_REPO),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=180
+        )
+
+        print("Feast apply completed.")
+
+        if result.stdout:
+            print("Feast apply output:", result.stdout)
+
+        if result.stderr:
+            print("Feast apply messages:", result.stderr)
+
+    except subprocess.CalledProcessError as exc:
+        print("Feast apply failed.")
+        print("STDOUT:", exc.stdout)
+        print("STDERR:", exc.stderr)
+        raise RuntimeError(
+            "Unable to apply Feast feature definitions."
+        ) from exc
+
+    except Exception as exc:
+        print("Feast initialization error:", repr(exc))
+        raise
+
+    if not FEAST_REGISTRY.exists():
+        raise FileNotFoundError(
+            f"Feast registry was not created: {FEAST_REGISTRY}"
+        )
+
+    feature_store = FeatureStore(
+        repo_path=str(FEAST_REPO)
+    )
+
+    feature_views = feature_store.list_feature_views()
+
+    view_names = [
+        view.name for view in feature_views
+    ]
+
+    print("Registered Feast feature views:", view_names)
+
+    if "card_fraud_features" not in view_names:
+        raise RuntimeError(
+            "card_fraud_features was not found "
+            "after running feast apply."
+        )
+
+    print("Feast initialization successful.")
+
+    return feature_store
+
+
+store = initialize_feast()
 
 
 # --------------------------------------------------
@@ -59,10 +140,6 @@ producer_lock = threading.Lock()
 
 
 def get_kafka_producer():
-    """
-    Create secure Aiven Kafka producer when needed.
-    Retry automatically if initial connection fails.
-    """
 
     global producer
 
@@ -78,6 +155,7 @@ def get_kafka_producer():
             return producer
 
         try:
+
             bootstrap_servers = os.getenv(
                 "KAFKA_BOOTSTRAP_SERVERS"
             )
@@ -119,6 +197,7 @@ def get_kafka_producer():
             ca_file = os.getenv("KAFKA_SSL_CAFILE")
 
             if ca_file:
+
                 if not os.path.isfile(ca_file):
                     raise FileNotFoundError(
                         "Kafka CA certificate file not found"
@@ -148,9 +227,6 @@ def get_kafka_producer():
 
 
 def json_serializer_default(value):
-    """
-    Convert NumPy and Pandas values into JSON-compatible values.
-    """
 
     if isinstance(value, np.generic):
         return value.item()
@@ -165,9 +241,6 @@ def json_serializer_default(value):
 
 
 def publish_to_kafka(message):
-    """
-    Publish transaction and wait for broker acknowledgement.
-    """
 
     global producer
 
@@ -305,6 +378,38 @@ def home():
     return {
         "message": "IEEE-CIS Fraud Detection API is running"
     }
+
+
+# --------------------------------------------------
+# FEAST DIAGNOSTIC ENDPOINT
+# --------------------------------------------------
+
+@app.get("/debug/feast")
+def debug_feast():
+
+    try:
+
+        feature_views = store.list_feature_views()
+
+        view_names = [
+            view.name for view in feature_views
+        ]
+
+        return {
+            "feature_repo_exists": FEAST_REPO.exists(),
+            "feature_store_yaml_exists": FEAST_CONFIG.exists(),
+            "registry_exists": FEAST_REGISTRY.exists(),
+            "feature_views": view_names,
+            "card_fraud_features_found": (
+                "card_fraud_features" in view_names
+            )
+        }
+
+    except Exception as exc:
+
+        return {
+            "feast_error": str(exc)
+        }
 
 
 # --------------------------------------------------
