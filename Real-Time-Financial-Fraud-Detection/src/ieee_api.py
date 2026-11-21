@@ -49,15 +49,10 @@ store = FeatureStore(repo_path=str(FEAST_REPO))
 
 
 # --------------------------------------------------
-# KAFKA CONFIGURATION
+# KAFKA CONFIGURATION - AIVEN CLOUD
 # --------------------------------------------------
 
 KAFKA_TOPIC = "fraud-transactions"
-
-KAFKA_BOOTSTRAP_SERVERS = os.getenv(
-    "KAFKA_BOOTSTRAP_SERVERS",
-    "localhost:9092"
-)
 
 producer = None
 producer_lock = threading.Lock()
@@ -65,8 +60,8 @@ producer_lock = threading.Lock()
 
 def get_kafka_producer():
     """
-    Create Kafka producer when needed.
-    Retry automatically if the initial connection failed.
+    Create secure Aiven Kafka producer when needed.
+    Retry automatically if initial connection fails.
     """
 
     global producer
@@ -79,27 +74,69 @@ def get_kafka_producer():
 
     with producer_lock:
 
-        # Check again after acquiring the lock.
         if producer is not None:
             return producer
 
         try:
-            producer = KafkaProducer(
-                bootstrap_servers=[KAFKA_BOOTSTRAP_SERVERS],
-                request_timeout_ms=10000,
-                max_block_ms=10000,
-                retries=2,
-                acks="all"
+            bootstrap_servers = os.getenv(
+                "KAFKA_BOOTSTRAP_SERVERS"
             )
 
+            username = os.getenv("KAFKA_SASL_USERNAME")
+            password = os.getenv("KAFKA_SASL_PASSWORD")
+
+            if not all([
+                bootstrap_servers,
+                username,
+                password
+            ]):
+                raise ValueError(
+                    "Missing Kafka environment variables"
+                )
+
+            kafka_config = {
+                "bootstrap_servers": [
+                    server.strip()
+                    for server in bootstrap_servers.split(",")
+                    if server.strip()
+                ],
+                "security_protocol": os.getenv(
+                    "KAFKA_SECURITY_PROTOCOL",
+                    "SASL_SSL"
+                ),
+                "sasl_mechanism": os.getenv(
+                    "KAFKA_SASL_MECHANISM",
+                    "SCRAM-SHA-256"
+                ),
+                "sasl_plain_username": username,
+                "sasl_plain_password": password,
+                "request_timeout_ms": 15000,
+                "max_block_ms": 15000,
+                "retries": 3,
+                "acks": "all"
+            }
+
+            ca_file = os.getenv("KAFKA_SSL_CAFILE")
+
+            if ca_file:
+                if not os.path.isfile(ca_file):
+                    raise FileNotFoundError(
+                        "Kafka CA certificate file not found"
+                    )
+
+                kafka_config["ssl_cafile"] = ca_file
+
+            producer = KafkaProducer(**kafka_config)
+
             print(
-                "Kafka producer initialized successfully:",
-                KAFKA_BOOTSTRAP_SERVERS
+                "Aiven Kafka producer initialized:",
+                bootstrap_servers
             )
 
             return producer
 
         except Exception as exc:
+
             producer = None
 
             print(
@@ -122,13 +159,14 @@ def json_serializer_default(value):
         return None
 
     raise TypeError(
-        f"Object of type {type(value).__name__} is not JSON serializable"
+        f"Object of type {type(value).__name__} "
+        "is not JSON serializable"
     )
 
 
 def publish_to_kafka(message):
     """
-    Publish a transaction and wait for broker acknowledgement.
+    Publish transaction and wait for broker acknowledgement.
     """
 
     global producer
@@ -137,6 +175,7 @@ def publish_to_kafka(message):
         return "DISABLED"
 
     try:
+
         kafka_producer = get_kafka_producer()
 
         if kafka_producer is None:
@@ -152,7 +191,6 @@ def publish_to_kafka(message):
             value=message_bytes
         )
 
-        # Wait until Kafka acknowledges the message.
         metadata = future.get(timeout=15)
 
         kafka_producer.flush(timeout=10)
@@ -173,8 +211,8 @@ def publish_to_kafka(message):
             repr(exc)
         )
 
-        # Reset producer so the next request can reconnect.
         with producer_lock:
+
             if producer is not None:
                 try:
                     producer.close(timeout=2)
@@ -278,9 +316,7 @@ def predict(request: TransactionRequest):
 
     try:
 
-        # ------------------------------------------
         # INPUT VALIDATION
-        # ------------------------------------------
 
         txn_dt = float(request.TransactionDT)
         transaction_amount = float(request.TransactionAmt)
@@ -302,9 +338,7 @@ def predict(request: TransactionRequest):
                 detail="TransactionAmt must be finite"
             )
 
-        # ------------------------------------------
         # FETCH FEAST ONLINE FEATURES
-        # ------------------------------------------
 
         online = store.get_online_features(
             features=[
@@ -321,18 +355,12 @@ def predict(request: TransactionRequest):
             ],
         ).to_dict()
 
-        # ------------------------------------------
         # FEATURE PREPARATION
-        # ------------------------------------------
 
         row = {
-
             "TransactionDT": txn_dt,
-
             "TransactionAmt": transaction_amount,
-
             "transaction_hour": (txn_dt // 3600) % 24,
-
             "transaction_day": txn_dt // 86400,
 
             "card_txn_count_1h":
@@ -365,9 +393,7 @@ def predict(request: TransactionRequest):
             columns=ALL_COLS
         )
 
-        # ------------------------------------------
         # NUMERIC PREPROCESSING
-        # ------------------------------------------
 
         for col in NUMERIC_COLS:
 
@@ -380,9 +406,7 @@ def predict(request: TransactionRequest):
             medians
         )
 
-        # ------------------------------------------
         # CATEGORICAL PREPROCESSING
-        # ------------------------------------------
 
         for col in CATEGORICAL_COLS:
 
@@ -403,9 +427,7 @@ def predict(request: TransactionRequest):
             index=X.index
         )
 
-        # ------------------------------------------
         # FINAL MODEL INPUT
-        # ------------------------------------------
 
         X_final = pd.concat(
             [
@@ -415,17 +437,13 @@ def predict(request: TransactionRequest):
             axis=1
         )[ALL_COLS].astype("float64")
 
-        # ------------------------------------------
         # XGBOOST PREDICTION
-        # ------------------------------------------
 
         xgb_probability = float(
             model.predict_proba(X_final)[0, 1]
         )
 
-        # ------------------------------------------
         # OPTIONAL GNN HYBRID PREDICTION
-        # ------------------------------------------
 
         gnn_score = GNN_SCORES.get(
             request.card_key
@@ -458,15 +476,11 @@ def predict(request: TransactionRequest):
             "FRAUD" if prediction else "NORMAL"
         )
 
-        # ------------------------------------------
         # TRANSACTION ID
-        # ------------------------------------------
 
         transaction_id = str(uuid.uuid4())
 
-        # ------------------------------------------
         # KAFKA MESSAGE
-        # ------------------------------------------
 
         kafka_message = {
 
@@ -474,10 +488,8 @@ def predict(request: TransactionRequest):
 
             "transaction_id": transaction_id,
 
-            # Exact features passed to the model.
             "features": X_final.iloc[0].to_dict(),
 
-            # Original request for auditing.
             "raw_features": (
                 request.model_dump()
                 if hasattr(request, "model_dump")
@@ -493,17 +505,13 @@ def predict(request: TransactionRequest):
             "threshold": active_threshold
         }
 
-        # ------------------------------------------
         # PUBLISH TO KAFKA
-        # ------------------------------------------
 
         kafka_status = publish_to_kafka(
             kafka_message
         )
 
-        # ------------------------------------------
         # API RESPONSE
-        # ------------------------------------------
 
         return {
 

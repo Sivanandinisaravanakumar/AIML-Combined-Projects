@@ -1,31 +1,33 @@
 
 from pathlib import Path
 import json
-from datetime import datetime
+import os
+from datetime import datetime, timezone
 
 import pandas as pd
-import networkx as nx
-import plotly.graph_objects as go
 import streamlit as st
 from kafka import KafkaConsumer
 
-# --------------------------------------------------
-# Paths
-# --------------------------------------------------
+
+# ==================================================
+# PATHS
+# ==================================================
 
 ROOT = Path(__file__).resolve().parents[1]
 
-DATA_DIR = ROOT / "data" / "ieee_cis" / "processed"
+FEATURE_FILE = (
+    ROOT / "feature_repo" / "feature_repo"
+    / "data" / "fraud_features.parquet"
+)
+
 MODEL_DIR = ROOT / "models" / "ieee_cis"
 REPORTS_DIR = ROOT / "reports"
 
-TRAIN_FILE = DATA_DIR / "train_features.csv"
 CASE_FILE = REPORTS_DIR / "analyst_cases.csv"
 DRIFT_FILE = REPORTS_DIR / "retraining_trigger.json"
 METRICS_FILE = MODEL_DIR / "metrics.json"
 ALERT_FILE = REPORTS_DIR / "kafka_alerts.csv"
 
-# Complete transaction stream
 STREAM_FILE = (
     ROOT / "data" / "ieee_cis" / "incoming"
     / "streamed_transactions.jsonl"
@@ -33,22 +35,36 @@ STREAM_FILE = (
 
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# --------------------------------------------------
-# Streamlit page
-# --------------------------------------------------
+
+# ==================================================
+# STREAMLIT CONFIGURATION
+# ==================================================
 
 st.set_page_config(
     page_title="Financial Fraud Analyst Dashboard",
-    page_icon="🛡️",
+    page_icon="ðŸ›¡ï¸",
     layout="wide",
 )
 
-st.title("🛡️ Financial Fraud Detection")
-st.caption("IEEE-CIS | Fraud Analyst Monitoring Dashboard")
+st.title("Financial Fraud Detection")
+st.caption(
+    "AIML-01 | IEEE-CIS | Fraud Analyst Monitoring Dashboard"
+)
 
-# --------------------------------------------------
-# Helper functions
-# --------------------------------------------------
+
+# ==================================================
+# HELPER FUNCTIONS
+# ==================================================
+
+@st.cache_data
+def load_feature_data():
+    """Load the available Feast transaction feature dataset."""
+
+    if not FEATURE_FILE.exists():
+        return pd.DataFrame()
+
+    return pd.read_parquet(FEATURE_FILE)
+
 
 def load_json(path):
     if not path.exists():
@@ -61,23 +77,53 @@ def load_json(path):
         return {}
 
 
+def safe_number(value):
+    """Convert values to numbers safely."""
+
+    if value is None:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+
+        return float(value)
+
+    except (TypeError, ValueError):
+        return None
+
+
 def create_case_file():
-    if not TRAIN_FILE.exists():
-        st.error(f"Training feature file not found: {TRAIN_FILE}")
+    """Create an initial analyst queue from labelled fraud records."""
+
+    df = load_feature_data()
+
+    if df.empty:
+        st.error(
+            "Transaction feature dataset not found. "
+            "Please check the fraud_features.parquet file."
+        )
         st.stop()
 
     required_columns = [
         "TransactionID",
-        "TransactionAmt",
+        "card_key",
+        "event_timestamp",
         "isFraud",
     ]
 
-    df = pd.read_csv(
-        TRAIN_FILE,
-        usecols=required_columns,
-    )
+    missing = [
+        column for column in required_columns
+        if column not in df.columns
+    ]
 
-    fraud_cases = df[df["isFraud"] == 1].head(100).copy()
+    if missing:
+        st.error(f"Missing dataset columns: {missing}")
+        st.stop()
+
+    fraud_cases = df[
+        pd.to_numeric(df["isFraud"], errors="coerce") == 1
+    ][required_columns].head(100).copy()
 
     fraud_cases["case_status"] = "Open"
     fraud_cases["analyst_feedback"] = "Pending"
@@ -88,58 +134,75 @@ def create_case_file():
 
 
 def load_cases():
+    """Load analyst cases or create the initial case queue."""
+
     if not CASE_FILE.exists():
         return create_case_file()
 
-    cases = pd.read_csv(CASE_FILE)
+    try:
+        cases = pd.read_csv(CASE_FILE)
 
-    if "case_status" not in cases.columns:
-        cases["case_status"] = "Open"
+    except (
+        OSError,
+        pd.errors.EmptyDataError,
+        pd.errors.ParserError,
+    ):
+        return create_case_file()
 
-    if "analyst_feedback" not in cases.columns:
-        cases["analyst_feedback"] = "Pending"
+    expected_columns = [
+        "TransactionID",
+        "card_key",
+        "event_timestamp",
+        "isFraud",
+        "case_status",
+        "analyst_feedback",
+    ]
 
-    cases["case_status"] = cases["case_status"].fillna("Open")
-    cases["analyst_feedback"] = cases["analyst_feedback"].fillna("Pending")
+    if not all(
+        column in cases.columns
+        for column in expected_columns
+    ):
+        return create_case_file()
 
-    return cases
+    cases["case_status"] = (
+        cases["case_status"].fillna("Open")
+    )
+
+    cases["analyst_feedback"] = (
+        cases["analyst_feedback"].fillna("Pending")
+    )
+
+    return cases[expected_columns]
 
 
 def save_cases(edited_cases):
+    """Save analyst changes."""
+
     temp_file = CASE_FILE.with_suffix(".tmp")
+
     edited_cases.to_csv(temp_file, index=False)
     temp_file.replace(CASE_FILE)
 
 
-def safe_number(value):
-    """Convert a value to a number, returning None if invalid."""
-    if value is None:
-        return None
-
-    try:
-        if pd.isna(value):
-            return None
-
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def normalize_alert(transaction, source="Unknown"):
-    """Convert JSONL or Kafka records to one dashboard format."""
+    """Convert incoming alert records to a common format."""
 
-    prediction = safe_number(transaction.get("Prediction"))
-    if prediction is None:
-        prediction = safe_number(transaction.get("prediction"))
+    prediction = safe_number(
+        transaction.get(
+            "Prediction",
+            transaction.get("prediction"),
+        )
+    )
 
     if prediction is not None:
         prediction = int(prediction)
 
-    label = transaction.get("Label")
-    if label is None or pd.isna(label):
-        label = transaction.get("label")
+    label = transaction.get(
+        "Label",
+        transaction.get("label"),
+    )
 
-    if label is None or pd.isna(label):
+    if label is None:
         if prediction == 1:
             label = "FRAUD"
         elif prediction == 0:
@@ -147,18 +210,18 @@ def normalize_alert(transaction, source="Unknown"):
         else:
             label = "UNKNOWN"
 
-    model = transaction.get("Model")
-    if model is None or pd.isna(model):
-        model = transaction.get("model")
+    model = transaction.get(
+        "Model",
+        transaction.get("model", source),
+    )
 
-    if model is None or pd.isna(model):
-        model = source
+    received_at = (
+        transaction.get("Received At")
+        or transaction.get("observed_at_utc")
+    )
 
     return {
-        "Received At": (
-            transaction.get("Received At")
-            or transaction.get("observed_at_utc")
-        ),
+        "Received At": received_at,
         "Transaction ID": (
             transaction.get("Transaction ID")
             or transaction.get("transaction_id")
@@ -185,34 +248,118 @@ def normalize_alert(transaction, source="Unknown"):
     }
 
 
-# --------------------------------------------------
-# Kafka Consumer
-# --------------------------------------------------
+# ==================================================
+# AIVEN KAFKA CONFIGURATION
+# ==================================================
 
 @st.cache_resource
 def get_dashboard_consumer():
-    return KafkaConsumer(
-        "fraud-transactions",
-        bootstrap_servers=["localhost:9092"],
-        group_id="streamlit-live-alerts-history-v2",
-        auto_offset_reset="earliest",
-        enable_auto_commit=True,
-        value_deserializer=lambda value: json.loads(
-            value.decode("utf-8")
-        ),
-        request_timeout_ms=10000,
+    """
+    Connect Streamlit dashboard to Aiven Kafka
+    using SASL_SSL and SCRAM-SHA-256.
+    """
+
+    kafka_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+
+    if not kafka_servers:
+        return None
+
+    required_variables = [
+        "KAFKA_SASL_USERNAME",
+        "KAFKA_SASL_PASSWORD",
+        "KAFKA_SECURITY_PROTOCOL",
+        "KAFKA_SASL_MECHANISM",
+    ]
+
+    missing_variables = [
+        name for name in required_variables
+        if not os.getenv(name)
+    ]
+
+    if missing_variables:
+        raise RuntimeError(
+            "Missing Kafka environment variables: "
+            + ", ".join(missing_variables)
+        )
+
+    security_protocol = os.getenv(
+        "KAFKA_SECURITY_PROTOCOL",
+        "SASL_SSL",
     )
 
+    sasl_mechanism = os.getenv(
+        "KAFKA_SASL_MECHANISM",
+        "SCRAM-SHA-256",
+    )
+
+    kafka_config = {
+        "bootstrap_servers": [
+            server.strip()
+            for server in kafka_servers.split(",")
+            if server.strip()
+        ],
+        "security_protocol": security_protocol,
+        "sasl_mechanism": sasl_mechanism,
+        "sasl_plain_username": os.getenv(
+            "KAFKA_SASL_USERNAME"
+        ),
+        "sasl_plain_password": os.getenv(
+            "KAFKA_SASL_PASSWORD"
+        ),
+        "group_id": "fraud-transactions-consumer",
+        "auto_offset_reset": "earliest",
+        "enable_auto_commit": True,
+        "value_deserializer": lambda value: json.loads(
+            value.decode("utf-8")
+        ),
+        "request_timeout_ms": 15000,
+    }
+
+    # Configure the Aiven CA certificate when provided.
+    ca_file = os.getenv("KAFKA_SSL_CAFILE")
+
+    if ca_file:
+        if not Path(ca_file).is_file():
+            raise FileNotFoundError(
+                f"Kafka CA certificate not found: {ca_file}"
+            )
+
+        kafka_config["ssl_cafile"] = ca_file
+
+    if security_protocol != "SASL_SSL":
+        raise ValueError(
+            "Aiven Kafka requires SASL_SSL for this configuration."
+        )
+
+    if sasl_mechanism != "SCRAM-SHA-256":
+        raise ValueError(
+            "Expected SASL mechanism SCRAM-SHA-256."
+        )
+
+    consumer = KafkaConsumer(
+        "fraud-transactions",
+        **kafka_config,
+    )
+
+    return consumer
+
+
+# ==================================================
+# READ LIVE ALERTS
+# ==================================================
 
 def read_live_alerts():
+    """Read historical records and new Kafka messages."""
 
     all_alerts = []
+    new_alerts = []
 
-    # --------------------------------------------------
-    # 1. Read complete JSONL transaction history
-    # --------------------------------------------------
+    # ----------------------------------------------
+    # 1. Read JSONL transaction history
+    # ----------------------------------------------
 
     if STREAM_FILE.exists():
+
         try:
             with STREAM_FILE.open(
                 "r",
@@ -220,6 +367,7 @@ def read_live_alerts():
             ) as file:
 
                 for line in file:
+
                     if not line.strip():
                         continue
 
@@ -229,7 +377,7 @@ def read_live_alerts():
                         all_alerts.append(
                             normalize_alert(
                                 transaction,
-                                source="Legacy/Unknown",
+                                source="Historical Stream",
                             )
                         )
 
@@ -238,22 +386,24 @@ def read_live_alerts():
 
         except OSError as error:
             st.warning(
-                f"Could not read transaction stream: {error}"
+                f"Could not read historical stream: {error}"
             )
 
-    # --------------------------------------------------
-    # 2. Read previously saved Kafka CSV history
-    # --------------------------------------------------
+    # ----------------------------------------------
+    # 2. Read previously saved alert CSV
+    # ----------------------------------------------
 
     if ALERT_FILE.exists():
+
         try:
             csv_df = pd.read_csv(ALERT_FILE)
 
             for transaction in csv_df.to_dict("records"):
+
                 all_alerts.append(
                     normalize_alert(
                         transaction,
-                        source="Kafka/Legacy",
+                        source="Saved Alert History",
                     )
                 )
 
@@ -264,73 +414,91 @@ def read_live_alerts():
         ):
             pass
 
-    # --------------------------------------------------
+    # ----------------------------------------------
     # 3. Read new Kafka messages
-    # --------------------------------------------------
-
-    new_alerts = []
+    # ----------------------------------------------
 
     try:
+
         consumer = get_dashboard_consumer()
 
-        messages = consumer.poll(
-            timeout_ms=500,
-            max_records=50,
-        )
+        if consumer is not None:
 
-        for records in messages.values():
-            for message in records:
+            messages = consumer.poll(
+                timeout_ms=500,
+                max_records=50,
+            )
 
-                transaction = message.value
+            for records in messages.values():
 
-                alert = normalize_alert(
-                    transaction,
-                    source="Kafka",
-                )
+                for message in records:
 
-                # Keep the Kafka receipt time for new messages
-                if not alert["Received At"]:
-                    alert["Received At"] = datetime.now().strftime(
-                        "%Y-%m-%d %H:%M:%S"
+                    alert = normalize_alert(
+                        message.value,
+                        source="Kafka",
                     )
 
-                new_alerts.append(alert)
+                    if not alert["Received At"]:
+                        alert["Received At"] = (
+                            datetime.now(timezone.utc).isoformat()
+                        )
+
+                    new_alerts.append(alert)
+
+        else:
+            st.info(
+                "Kafka is not configured. "
+                "Historical transaction records are shown when available."
+            )
 
     except Exception as error:
         st.warning(
-            f"Kafka connection or reading error: {error}"
+            f"Kafka is currently unavailable: {error}"
         )
 
-    # --------------------------------------------------
-    # 4. Save new Kafka messages in existing CSV format
-    # --------------------------------------------------
+    # ----------------------------------------------
+    # 4. Save new Kafka messages
+    # ----------------------------------------------
 
     if new_alerts:
 
-        csv_records = []
-
-        for alert in new_alerts:
-            csv_records.append({
+        csv_records = [
+            {
                 "Received At": alert["Received At"],
                 "Transaction ID": alert["Transaction ID"],
                 "Fraud Probability": alert["Fraud Probability"],
                 "Threshold": alert["Threshold"],
                 "Prediction": alert["Prediction"],
                 "Label": alert["Label"],
-            })
+                "Model": alert["Model"],
+                "Actual Fraud": alert["Actual Fraud"],
+            }
+            for alert in new_alerts
+        ]
 
-        pd.DataFrame(csv_records).to_csv(
-            ALERT_FILE,
-            mode="a",
-            header=not ALERT_FILE.exists(),
-            index=False,
-        )
+        new_df = pd.DataFrame(csv_records)
+
+        if ALERT_FILE.exists():
+
+            new_df.to_csv(
+                ALERT_FILE,
+                mode="a",
+                header=False,
+                index=False,
+            )
+
+        else:
+
+            new_df.to_csv(
+                ALERT_FILE,
+                index=False,
+            )
 
         all_alerts.extend(new_alerts)
 
-    # --------------------------------------------------
-    # 5. Remove duplicate Transaction IDs
-    # --------------------------------------------------
+    # ----------------------------------------------
+    # 5. Remove duplicate transaction IDs
+    # ----------------------------------------------
 
     combined_df = pd.DataFrame(all_alerts)
 
@@ -340,7 +508,7 @@ def read_live_alerts():
 
         identified = combined_df[has_id].drop_duplicates(
             subset=["Transaction ID"],
-            keep="first",
+            keep="last",
         )
 
         unidentified = combined_df[~has_id]
@@ -350,10 +518,6 @@ def read_live_alerts():
             ignore_index=True,
         )
 
-    # --------------------------------------------------
-    # 6. Store final dashboard records
-    # --------------------------------------------------
-
     st.session_state.live_alerts = (
         combined_df.to_dict("records")
         if not combined_df.empty
@@ -361,17 +525,18 @@ def read_live_alerts():
     )
 
 
-# --------------------------------------------------
-# Load monitoring information
-# --------------------------------------------------
+# ==================================================
+# LOAD MONITORING DATA
+# ==================================================
 
 drift = load_json(DRIFT_FILE)
 model_metrics = load_json(METRICS_FILE)
 cases = load_cases()
 
-# --------------------------------------------------
-# Sidebar
-# --------------------------------------------------
+
+# ==================================================
+# SIDEBAR
+# ==================================================
 
 st.sidebar.title("Dashboard Menu")
 st.sidebar.write("Dataset: IEEE-CIS")
@@ -383,13 +548,14 @@ page = st.sidebar.radio(
         "Analyst Case Queue",
         "Data Drift",
         "Live Kafka Alerts",
-        "Fraud Network",
+        "Card Behaviour Analysis",
     ],
 )
 
-# --------------------------------------------------
-# Overview
-# --------------------------------------------------
+
+# ==================================================
+# OVERVIEW
+# ==================================================
 
 if page == "Overview":
 
@@ -423,7 +589,9 @@ if page == "Overview":
 
     col2.metric(
         "Drift Share",
-        f"{drift_share * 100:.1f}%",
+        f"{drift_share * 100:.1f}%"
+        if isinstance(drift_share, (int, float))
+        else "N/A",
     )
 
     col3.metric(
@@ -459,26 +627,30 @@ if page == "Overview":
     )
 
     st.warning(
-        "The current case queue contains historical labelled "
-        "IEEE-CIS fraud examples. It is not a live Kafka alert feed."
+        "The analyst queue contains historical labelled "
+        "IEEE-CIS fraud examples. It is not a live Kafka case queue."
     )
 
 
-# --------------------------------------------------
-# Analyst Case Queue
-# --------------------------------------------------
+# ==================================================
+# ANALYST CASE QUEUE
+# ==================================================
 
 elif page == "Analyst Case Queue":
 
     st.header("Analyst Case Queue")
 
     st.write(
-        "Review historical fraud examples and update their case status."
+        "Review historical labelled fraud transactions "
+        "and update their investigation status."
     )
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Total Cases", len(cases))
+    col1.metric(
+        "Total Cases",
+        len(cases),
+    )
 
     col2.metric(
         "Open Cases",
@@ -501,16 +673,19 @@ elif page == "Analyst Case Queue":
             key="analyst_cases_editor",
             disabled=[
                 "TransactionID",
-                "TransactionAmt",
+                "card_key",
+                "event_timestamp",
                 "isFraud",
             ],
             column_config={
                 "TransactionID": st.column_config.NumberColumn(
                     "Transaction ID",
                 ),
-                "TransactionAmt": st.column_config.NumberColumn(
-                    "Transaction Amount",
-                    format="%.2f",
+                "card_key": st.column_config.TextColumn(
+                    "Card Key",
+                ),
+                "event_timestamp": st.column_config.TextColumn(
+                    "Event Timestamp",
                 ),
                 "isFraud": st.column_config.NumberColumn(
                     "Actual Fraud Label",
@@ -544,6 +719,7 @@ elif page == "Analyst Case Queue":
         )
 
     if save_clicked:
+
         try:
             save_cases(edited_cases)
 
@@ -559,25 +735,29 @@ elif page == "Analyst Case Queue":
             )
 
     st.caption(
-        "Updates are saved locally in reports/analyst_cases.csv."
+        "Updates are saved to reports/analyst_cases.csv. "
+        "On Streamlit Cloud, local file changes may not persist "
+        "after an app restart."
     )
 
 
-# --------------------------------------------------
-# Data Drift
-# --------------------------------------------------
+# ==================================================
+# DATA DRIFT
+# ==================================================
 
 elif page == "Data Drift":
 
     st.header("Evidently Data Drift Monitoring")
 
     if not drift:
+
         st.warning(
             "Drift report data not found. "
-            "Run src/drift_monitor.py first."
+            "Run the drift monitoring process to generate it."
         )
 
     else:
+
         drift_count = drift.get("drifted_features", 0)
         total_features = drift.get("total_features", 0)
         drift_share = drift.get("drift_share", 0)
@@ -585,16 +765,25 @@ elif page == "Data Drift":
 
         col1, col2, col3 = st.columns(3)
 
-        col1.metric("Total Features", total_features)
-        col2.metric("Drifted Features", drift_count)
+        col1.metric(
+            "Total Features",
+            total_features,
+        )
+
+        col2.metric(
+            "Drifted Features",
+            drift_count,
+        )
 
         col3.metric(
             "Drift Share",
-            f"{drift_share * 100:.1f}%",
+            f"{drift_share * 100:.1f}%"
+            if isinstance(drift_share, (int, float))
+            else "N/A",
         )
 
         st.progress(
-            min(max(drift_share, 0.0), 1.0),
+            min(max(float(drift_share), 0.0), 1.0),
             text="Share of drifted features",
         )
 
@@ -604,42 +793,52 @@ elif page == "Data Drift":
         )
 
         if drift.get("retraining_required", False):
+
             st.error(
-                "Retraining review required: drift threshold reached."
-            )
-        else:
-            st.success(
-                "No retraining request: drift is below threshold."
+                "Retraining review required: "
+                "drift threshold reached."
             )
 
+        else:
+
+            st.success(
+                "No retraining request: "
+                "drift is below threshold."
+            )
+
+        st.subheader("Drift Report Details")
         st.json(drift)
 
-    report_file = REPORTS_DIR / "ieee_data_drift_report.html"
+    report_file = (
+        REPORTS_DIR / "ieee_data_drift_report.html"
+    )
 
     if report_file.exists():
+
         st.caption(
-            "Detailed Evidently HTML report: "
-            "reports/ieee_data_drift_report.html"
+            "Detailed Evidently HTML report is available "
+            "in reports/ieee_data_drift_report.html."
         )
 
 
-# --------------------------------------------------
-# Live Kafka Alerts + Complete Transaction History
-# --------------------------------------------------
+# ==================================================
+# LIVE KAFKA ALERTS
+# ==================================================
 
 elif page == "Live Kafka Alerts":
 
     st.header("Live Kafka Fraud Alerts")
 
     st.caption(
-        "Transaction history from JSONL and real-time messages "
-        "from Kafka topic: fraud-transactions"
+        "Historical JSONL and CSV records, together with "
+        "new Kafka messages when a Kafka service is configured."
     )
 
     @st.fragment(run_every="3s")
     def display_live_alerts():
 
         try:
+
             read_live_alerts()
 
             alerts = st.session_state.live_alerts
@@ -706,16 +905,18 @@ elif page == "Live Kafka Alerts":
 
                 st.caption(
                     "Predicted Fraud represents model predictions. "
-                    "Actual Fraud is ground truth and may be unavailable "
-                    "for live transactions."
+                    "Actual Fraud is ground truth and may not be "
+                    "available for live transactions."
                 )
 
             else:
+
                 st.info(
-                    "No transaction records found."
+                    "No transaction alert records found yet."
                 )
 
         except Exception as error:
+
             st.error(
                 f"Could not load transaction alerts: {error}"
             )
@@ -723,308 +924,213 @@ elif page == "Live Kafka Alerts":
     display_live_alerts()
 
 
-# --------------------------------------------------
-# Fraud Network
-# --------------------------------------------------
+# ==================================================
+# CARD BEHAVIOUR ANALYSIS
+# ==================================================
 
-elif page == "Fraud Network":
+elif page == "Card Behaviour Analysis":
 
-    st.header("Shared Device Fraud Network")
+    st.header("Card Behaviour Analysis")
 
     st.caption(
-        "Card-device relationships from IEEE-CIS training data. "
-        "Only devices shared by 2–20 cards are considered."
+        "Transaction frequency, amount behaviour, "
+        "device changes and address changes."
     )
+
+    df = load_feature_data()
+
+    if df.empty:
+
+        st.error(
+            "Feature dataset not found. "
+            "Please check fraud_features.parquet."
+        )
+        st.stop()
 
     required_columns = [
         "TransactionID",
+        "card_key",
         "isFraud",
-        "card1",
-        "card2",
-        "card3",
-        "card5",
-        "card6",
-        "DeviceInfo",
+        "card_txn_count_1h",
+        "card_txn_count_24h",
+        "card_avg_amount_30d",
+        "amount_vs_card_average",
+        "device_changed",
+        "address_changed",
+        "device_missing",
     ]
 
-    if not TRAIN_FILE.exists():
-        st.error(f"Training data not found: {TRAIN_FILE}")
+    missing = [
+        column for column in required_columns
+        if column not in df.columns
+    ]
+
+    if missing:
+
+        st.error(
+            f"Required feature columns are missing: {missing}"
+        )
         st.stop()
 
-    with st.spinner("Building card-device network..."):
-
-        df = pd.read_csv(
-            TRAIN_FILE,
-            usecols=required_columns,
-        )
-
-        card_columns = [
-            "card1",
-            "card2",
-            "card3",
-            "card5",
-            "card6",
-        ]
-
-        card_key = (
-            df[card_columns[0]]
-            .astype("string")
-            .fillna("missing")
-        )
-
-        for column in card_columns[1:]:
-            card_key = card_key.str.cat(
-                df[column].astype("string").fillna("missing"),
-                sep="_",
-            )
-
-        df["card_key"] = card_key
-
-        missing_card = df["card1"].isna()
-
-        df.loc[missing_card, "card_key"] = (
-            "missing_"
-            + df.loc[missing_card, "TransactionID"].astype(str)
-        )
-
-        known = df[df["DeviceInfo"].notna()].copy()
-
-        device_stats = known.groupby("DeviceInfo").agg(
-            cards=("card_key", "nunique"),
-            fraud_transactions=("isFraud", "sum"),
-            transactions=("TransactionID", "count"),
-        )
-
-        selected = device_stats[
-            device_stats["cards"].between(2, 20)
-            & (device_stats["fraud_transactions"] > 0)
-        ].nlargest(10, "fraud_transactions")
-
-        if selected.empty:
-            st.info(
-                "No qualifying shared-device groups were found."
-            )
-            st.stop()
-
-        network_rows = known[
-            known["DeviceInfo"].isin(selected.index)
-        ].copy()
-
-        card_stats = network_rows.groupby("card_key").agg(
-            is_fraud=("isFraud", "max"),
-            transactions=("TransactionID", "count"),
-            fraud_transactions=("isFraud", "sum"),
-        )
-
-        edges = network_rows[
-            ["DeviceInfo", "card_key"]
-        ].drop_duplicates()
-
-        graph = nx.Graph()
-
-        for device, row in selected.iterrows():
-
-            graph.add_node(
-                ("device", device),
-                kind="device",
-                label=device,
-                cards=int(row["cards"]),
-                fraud_transactions=int(row["fraud_transactions"]),
-                transactions=int(row["transactions"]),
-            )
-
-        for card, row in card_stats.iterrows():
-
-            graph.add_node(
-                ("card", card),
-                kind="card",
-                label=card,
-                is_fraud=int(row["is_fraud"]),
-                transactions=int(row["transactions"]),
-                fraud_transactions=int(row["fraud_transactions"]),
-            )
-
-        for _, edge in edges.iterrows():
-
-            graph.add_edge(
-                ("device", edge["DeviceInfo"]),
-                ("card", edge["card_key"]),
-            )
-
-        positions = nx.spring_layout(
-            graph,
-            seed=42,
-            k=0.8,
-            iterations=80,
-        )
-
-    fraud_cards = [
-        node
-        for node, attrs in graph.nodes(data=True)
-        if attrs["kind"] == "card"
-        and attrs["is_fraud"] == 1
+    fraud_df = df[
+        pd.to_numeric(df["isFraud"], errors="coerce") == 1
     ]
 
-    other_cards = [
-        node
-        for node, attrs in graph.nodes(data=True)
-        if attrs["kind"] == "card"
-        and attrs["is_fraud"] == 0
+    normal_df = df[
+        pd.to_numeric(df["isFraud"], errors="coerce") == 0
     ]
 
-    device_nodes = [
-        node
-        for node, attrs in graph.nodes(data=True)
-        if attrs["kind"] == "device"
+    fraud_count = len(fraud_df)
+    normal_count = len(normal_df)
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "Total Transactions",
+        f"{len(df):,}",
+    )
+
+    col2.metric(
+        "Fraud Transactions",
+        f"{fraud_count:,}",
+    )
+
+    col3.metric(
+        "Normal Transactions",
+        f"{normal_count:,}",
+    )
+
+    st.divider()
+
+    # ----------------------------------------------
+    # Behaviour indicators
+    # ----------------------------------------------
+
+    st.subheader("Transaction Behaviour Indicators")
+
+    indicator_columns = [
+        "card_txn_count_1h",
+        "card_txn_count_24h",
+        "card_avg_amount_30d",
+        "amount_vs_card_average",
+        "device_changed",
+        "address_changed",
+        "device_missing",
     ]
 
-    col1, col2, col3, col4 = st.columns(4)
+    indicator_summary = []
 
-    col1.metric("Shared Devices", len(device_nodes))
-    col2.metric("Connected Cards", len(card_stats))
-    col3.metric("Card-Device Links", len(edges))
-    col4.metric("Cards with Fraud Labels", len(fraud_cards))
+    for column in indicator_columns:
 
-    st.info(
-        "Red = card has at least one confirmed fraud transaction "
-        "in the training data. Grey = no confirmed fraud transaction "
-        "in this data. Blue = shared device. A shared device is an "
-        "investigation lead, not proof of a coordinated fraud ring."
-    )
+        fraud_values = pd.to_numeric(
+            fraud_df[column],
+            errors="coerce",
+        )
 
-    edge_x = []
-    edge_y = []
+        normal_values = pd.to_numeric(
+            normal_df[column],
+            errors="coerce",
+        )
 
-    for source, target in graph.edges():
+        indicator_summary.append({
+            "Indicator": column,
+            "Fraud Average": fraud_values.mean(),
+            "Normal Average": normal_values.mean(),
+        })
 
-        x0, y0 = positions[source]
-        x1, y1 = positions[target]
-
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        mode="lines",
-        line=dict(width=1, color="#9ca3af"),
-        hoverinfo="skip",
-        name="Card-device links",
-    ))
-
-    def add_card_trace(nodes, name, color):
-
-        if not nodes:
-            return
-
-        fig.add_trace(go.Scatter(
-            x=[positions[node][0] for node in nodes],
-            y=[positions[node][1] for node in nodes],
-            mode="markers",
-            name=name,
-            marker=dict(
-                size=12,
-                color=color,
-                line=dict(width=1, color="white"),
-            ),
-            customdata=[
-                [
-                    graph.nodes[node]["label"],
-                    graph.nodes[node]["transactions"],
-                    graph.nodes[node]["fraud_transactions"],
-                ]
-                for node in nodes
-            ],
-            hovertemplate=(
-                "Card: %{customdata[0]}<br>"
-                "Transactions: %{customdata[1]}<br>"
-                "Fraud transactions: %{customdata[2]}"
-                "<extra></extra>"
-            ),
-        ))
-
-    add_card_trace(
-        fraud_cards,
-        "Confirmed fraud card",
-        "#dc2626",
-    )
-
-    add_card_trace(
-        other_cards,
-        "Other connected card",
-        "#9ca3af",
-    )
-
-    fig.add_trace(go.Scatter(
-        x=[positions[node][0] for node in device_nodes],
-        y=[positions[node][1] for node in device_nodes],
-        mode="markers",
-        name="Shared device",
-        marker=dict(
-            size=20,
-            color="#2563eb",
-            symbol="diamond",
-            line=dict(width=1, color="white"),
-        ),
-        customdata=[
-            [
-                graph.nodes[node]["label"],
-                graph.nodes[node]["cards"],
-                graph.nodes[node]["fraud_transactions"],
-                graph.nodes[node]["transactions"],
-            ]
-            for node in device_nodes
-        ],
-        hovertemplate=(
-            "Device: %{customdata[0]}<br>"
-            "Connected cards: %{customdata[1]}<br>"
-            "Fraud transactions: %{customdata[2]}<br>"
-            "Total transactions: %{customdata[3]}"
-            "<extra></extra>"
-        ),
-    ))
-
-    fig.update_layout(
-        height=720,
-        title="Top 10 Shared Devices and Connected Cards",
-        showlegend=True,
-        hovermode="closest",
-        margin=dict(l=10, r=10, t=55, b=10),
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
-        plot_bgcolor="white",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-        ),
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-    )
-
-    st.subheader("Selected Shared Devices")
+    summary_df = pd.DataFrame(indicator_summary)
 
     st.dataframe(
-        selected.reset_index(),
+        summary_df,
         use_container_width=True,
         hide_index=True,
     )
 
-    st.caption(
-        "Graph uses confirmed IEEE-CIS training labels; "
-        "it does not establish that connected accounts belong "
-        "to the same actor."
+    st.divider()
+
+    # ----------------------------------------------
+    # Card-level summary
+    # ----------------------------------------------
+
+    st.subheader("Card-Level Fraud Summary")
+
+    card_summary = (
+        df.groupby("card_key")
+        .agg(
+            transactions=("TransactionID", "count"),
+            fraud_transactions=("isFraud", "sum"),
+            avg_txn_1h=("card_txn_count_1h", "mean"),
+            avg_txn_24h=("card_txn_count_24h", "mean"),
+            device_changes=("device_changed", "sum"),
+            address_changes=("address_changed", "sum"),
+        )
+        .reset_index()
+    )
+
+    card_summary["fraud_rate"] = (
+        card_summary["fraud_transactions"]
+        / card_summary["transactions"]
+    )
+
+    card_summary = card_summary.sort_values(
+        ["fraud_transactions", "transactions"],
+        ascending=False,
+    )
+
+    st.dataframe(
+        card_summary.head(20),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.divider()
+
+    # ----------------------------------------------
+    # Fraud vs normal comparison
+    # ----------------------------------------------
+
+    st.subheader("Fraud vs Normal Behaviour")
+
+    comparison_columns = [
+        "card_txn_count_1h",
+        "card_txn_count_24h",
+        "device_changed",
+        "address_changed",
+        "device_missing",
+    ]
+
+    comparison_data = []
+
+    for column in comparison_columns:
+
+        comparison_data.append({
+            "Indicator": column,
+            "Fraud": pd.to_numeric(
+                fraud_df[column],
+                errors="coerce",
+            ).mean(),
+            "Normal": pd.to_numeric(
+                normal_df[column],
+                errors="coerce",
+            ).mean(),
+        })
+
+    comparison_df = pd.DataFrame(comparison_data)
+
+    st.bar_chart(
+        comparison_df.set_index("Indicator")
+    )
+
+    st.info(
+        "These are historical labelled transaction features. "
+        "Behaviour indicators help analysts identify unusual "
+        "patterns; they do not independently prove fraud."
     )
 
 
-# --------------------------------------------------
-# Footer
-# --------------------------------------------------
+# ==================================================
+# FOOTER
+# ==================================================
 
 st.divider()
 
@@ -1032,4 +1138,3 @@ st.caption(
     "AIML-01 Financial Fraud Detection | "
     "Streamlit Analyst Dashboard"
 )
-
