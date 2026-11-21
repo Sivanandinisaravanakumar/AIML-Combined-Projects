@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -252,45 +253,38 @@ def normalize_alert(transaction, source="Unknown"):
 # AIVEN KAFKA CONFIGURATION
 # ==================================================
 
+def get_app_setting(name, default=None):
+    """Read configuration from environment variables or Streamlit secrets."""
+    value = os.getenv(name)
+    if value:
+        return value
+
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
 @st.cache_resource
 def get_dashboard_consumer():
-    """
-    Connect Streamlit dashboard to Aiven Kafka
-    using SASL_SSL and SCRAM-SHA-256.
-    """
+    """Connect the dashboard to Aiven Kafka."""
 
-    kafka_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+    kafka_servers = get_app_setting("KAFKA_BOOTSTRAP_SERVERS")
 
     if not kafka_servers:
         return None
 
-    required_variables = [
-        "KAFKA_SASL_USERNAME",
-        "KAFKA_SASL_PASSWORD",
-        "KAFKA_SECURITY_PROTOCOL",
-        "KAFKA_SASL_MECHANISM",
-    ]
-
-    missing_variables = [
-        name for name in required_variables
-        if not os.getenv(name)
-    ]
-
-    if missing_variables:
-        raise RuntimeError(
-            "Missing Kafka environment variables: "
-            + ", ".join(missing_variables)
-        )
-
-    security_protocol = os.getenv(
-        "KAFKA_SECURITY_PROTOCOL",
-        "SASL_SSL",
+    username = get_app_setting("KAFKA_SASL_USERNAME")
+    password = get_app_setting("KAFKA_SASL_PASSWORD")
+    security_protocol = get_app_setting(
+        "KAFKA_SECURITY_PROTOCOL", "SASL_SSL"
+    )
+    sasl_mechanism = get_app_setting(
+        "KAFKA_SASL_MECHANISM", "SCRAM-SHA-256"
     )
 
-    sasl_mechanism = os.getenv(
-        "KAFKA_SASL_MECHANISM",
-        "SCRAM-SHA-256",
-    )
+    if not all([username, password]):
+        raise RuntimeError("Missing Kafka username or password configuration.")
 
     kafka_config = {
         "bootstrap_servers": [
@@ -300,12 +294,8 @@ def get_dashboard_consumer():
         ],
         "security_protocol": security_protocol,
         "sasl_mechanism": sasl_mechanism,
-        "sasl_plain_username": os.getenv(
-            "KAFKA_SASL_USERNAME"
-        ),
-        "sasl_plain_password": os.getenv(
-            "KAFKA_SASL_PASSWORD"
-        ),
+        "sasl_plain_username": username,
+        "sasl_plain_password": password,
         "group_id": "fraud-transactions-consumer",
         "auto_offset_reset": "earliest",
         "enable_auto_commit": True,
@@ -315,32 +305,26 @@ def get_dashboard_consumer():
         "request_timeout_ms": 15000,
     }
 
-    # Configure the Aiven CA certificate when provided.
-    ca_file = os.getenv("KAFKA_SSL_CAFILE")
+    ca_file = get_app_setting("KAFKA_SSL_CAFILE")
+    ca_pem = get_app_setting("KAFKA_SSL_CA_PEM")
+
+    if ca_pem and not ca_file:
+        ca_path = Path(tempfile.gettempdir()) / "aiven-kafka-ca.pem"
+        ca_path.write_text(str(ca_pem).strip() + "\n", encoding="utf-8")
+        ca_file = str(ca_path)
 
     if ca_file:
         if not Path(ca_file).is_file():
-            raise FileNotFoundError(
-                f"Kafka CA certificate not found: {ca_file}"
-            )
-
+            raise FileNotFoundError("Kafka CA certificate file not found.")
         kafka_config["ssl_cafile"] = ca_file
 
     if security_protocol != "SASL_SSL":
-        raise ValueError(
-            "Aiven Kafka requires SASL_SSL for this configuration."
-        )
+        raise ValueError("Aiven Kafka requires SASL_SSL.")
 
     if sasl_mechanism != "SCRAM-SHA-256":
-        raise ValueError(
-            "Expected SASL mechanism SCRAM-SHA-256."
-        )
+        raise ValueError("Expected SCRAM-SHA-256.")
 
-    consumer = KafkaConsumer(
-        "fraud-transactions",
-        **kafka_config,
-    )
-
+    consumer = KafkaConsumer("fraud-transactions", **kafka_config)
     return consumer
 
 
