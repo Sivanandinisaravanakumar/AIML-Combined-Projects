@@ -5,7 +5,7 @@ __pycache__/
 .git/
 mlruns/
 mlflow.db
-data/
+/data/
 tests/
 *.txt.txt
 
