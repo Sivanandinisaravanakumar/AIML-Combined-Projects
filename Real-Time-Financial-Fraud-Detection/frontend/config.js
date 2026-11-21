@@ -1,1 +1,1 @@
-window.API_URL = "http://localhost:30082";
+window.API_URL = "https://aiml-combined-projects.onrender.com";
