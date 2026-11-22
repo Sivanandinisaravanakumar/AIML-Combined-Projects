@@ -1,0 +1,13 @@
+﻿.git
+.venv
+venv
+**/__pycache__
+**/*.pyc
+frontend/node_modules
+frontend/dist
+data/rsna/train_images/
+data/rsna/stage_2_train_images.zip
+data/rsna/stage_2_train_labels.csv.zip
+.dvc/cache
+models/backup/
+storage/*
