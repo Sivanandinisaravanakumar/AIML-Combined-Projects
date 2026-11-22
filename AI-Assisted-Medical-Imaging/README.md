@@ -215,3 +215,52 @@ This application is an academic research prototype developed for educational pur
 - [Experimental Results and Limitations](docs/results-and-limitations.md)
 - [Final Presentation Outline](docs/final-presentation-outline.md)
 - [Individual Reflection Template](docs/individual-reflection-template.md)
+
+## Safety, validation and implementation status
+
+This project is an educational research prototype, not a clinically validated
+medical device. It must not be used for diagnosis, treatment, or emergency
+decisions. Predictions and Grad-CAM visualizations can be inaccurate.
+
+### Implemented
+- RSNA Pneumonia Detection dataset with DICOM image reading.
+- DenseNet121 binary classification training pilot.
+- Image preprocessing and training-time augmentation.
+- Grad-CAM visualization.
+- FastAPI scan upload, prediction and case management.
+- Doctor review/override workflow with SQLite audit history.
+- React scan review interface and audit history display.
+- Orthanc integration configuration in Docker Compose.
+
+### Current model limitations
+The current classifier was trained as a limited 400-patient, one-epoch CPU
+pilot. Its validation metrics are preliminary and are not clinical performance
+claims. A larger, independently validated training and evaluation process is
+required before any real-world use.
+
+### Segmentation limitation
+The RSNA dataset used here provides 2D chest X-ray images and bounding-box
+annotations, not 3D voxel-wise segmentation masks. Therefore, a trained 3D
+U-Net segmentation model is not claimed as completed. A separate dataset with
+suitable segmentation masks, such as an appropriately licensed medical
+segmentation dataset, is required.
+
+### DVC limitation
+DVC configuration and remote storage must be checked and configured for the
+team's actual storage provider. Do not assume that a local DVC cache is a
+remote backup.
+
+### Run with Docker Compose
+From the project root:
+
+```powershell
+docker compose up -d --build
+docker compose ps
+```
+
+Frontend: http://localhost:5173
+Backend API: http://localhost:8000/docs
+Orthanc: http://localhost:8042
+
+The default Orthanc credentials in the development Compose configuration
+must be changed before any network or production deployment.

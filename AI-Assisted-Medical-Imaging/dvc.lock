@@ -9,14 +9,14 @@ stages:
       size: 7565
     - path: backend/train_rsna.py
       hash: md5
-      md5: 77e636634f13686cdebe471922ed1113
-      size: 6867
+      md5: fe64a32da9295bdaad4fb346216de485
+      size: 6062
     outs:
     - path: models/rsna_metrics.json
       hash: md5
-      md5: 7d7bdc1137b6710dda77333b09b9637d
-      size: 628
+      md5: 0e1b112e410a41a3d913dd1d5d839391
+      size: 631
     - path: models/rsna_model.pth
       hash: md5
-      md5: 9beee7f551f8434fff80cc6e46539f28
-      size: 28420648
+      md5: 49b1ff22546eee8c5aab09fc41f1f71a
+      size: 28420245

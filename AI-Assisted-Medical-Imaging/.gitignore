@@ -19,3 +19,6 @@ data/demo/
 .env
 
 *.bak
+
+/data/rsna/
+*.backup

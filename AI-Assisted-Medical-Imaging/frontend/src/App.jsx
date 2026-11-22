@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 
 // Docker backend runs on port 8000
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8765";
 
 async function api(path, options) {
   const res = await fetch(`${API}${path}`, options);
@@ -87,6 +87,15 @@ export default function App() {
           )}
         </div>
       </header>
+
+      <div className="notice" role="note" style={{ margin: "16px 0", lineHeight: 1.6 }}>
+        <strong>Educational research prototype only.</strong> This AI system is
+        not a medical device and must not be used for clinical diagnosis,
+        treatment decisions, or emergency care. Predictions and Grad-CAM
+        visualizations may be inaccurate. All findings require independent
+        assessment by qualified healthcare professionals. The model was trained
+        using a limited dataset and has not been clinically validated.
+      </div>
 
       <div className="layout">
         <aside className="side">
@@ -195,6 +204,21 @@ function CaseView({ c, opacity, setOpacity, onSaved }) {
   const [localizationLoading, setLocalizationLoading] = useState(false);
   const [localizationError, setLocalizationError] = useState("");
 
+  const [audit, setAudit] = useState([]);
+  const [auditError, setAuditError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    api(`/cases/${c.id}/audit`)
+      .then((rows) => {
+        if (active) setAudit(rows);
+      })
+      .catch((e) => {
+        if (active) setAuditError(e.message);
+      });
+    return () => { active = false; };
+  }, [c.id]);
+
   const reviewed = c.status === "reviewed";
 
   const isDicom =
@@ -269,6 +293,13 @@ function CaseView({ c, opacity, setOpacity, onSaved }) {
       });
 
       onSaved(u);
+      try {
+        const history = await api(`/cases/${c.id}/audit`);
+        setAudit(history);
+        setAuditError("");
+      } catch (auditEx) {
+        setAuditError(auditEx.message);
+      }
     } catch (ex) {
       setErr(ex.message);
     } finally {
@@ -481,6 +512,36 @@ function CaseView({ c, opacity, setOpacity, onSaved }) {
           </p>
         )}
       </form>
+
+      <section className="card">
+        <h3>Audit history</h3>
+        <p className="muted small">
+          Recorded scan and reviewer actions for this case.
+        </p>
+
+        {auditError && <div className="error">{auditError}</div>}
+
+        {audit.length === 0 ? (
+          <p className="muted">No audit events available for this case.</p>
+        ) : (
+          <ol style={{ paddingLeft: "22px" }}>
+            {audit.map((event) => (
+              <li key={event.id} style={{ marginBottom: "12px" }}>
+                <strong>{(event.action || "EVENT").replaceAll("_", " ")}</strong>
+                <div className="muted small">
+                  {event.timestamp
+                    ? new Date(event.timestamp).toLocaleString()
+                    : "Time unavailable"}
+                </div>
+                {event.reviewer && <div>Reviewer: {event.reviewer}</div>}
+                {event.decision && <div>Decision: {event.decision}</div>}
+                {event.final_label && <div>Final label: {event.final_label}</div>}
+                {event.notes && <div>Notes: {event.notes}</div>}
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
     </>
   );
 }

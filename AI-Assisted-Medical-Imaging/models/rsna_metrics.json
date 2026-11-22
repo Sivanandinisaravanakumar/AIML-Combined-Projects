@@ -1,10 +1,10 @@
 {
   "dataset": "RSNA Pneumonia Detection Challenge",
-  "training_type": "400-patient CPU pilot; classifier head only; 1 epoch; RandomRotation augmentation",
+  "training_type": "400-patient CPU pilot; classifier head only; 1 epoch",
   "augmentation": "RandomRotation +/- 5 degrees (training only)",
   "train_patients": 320,
   "validation_patients": 80,
-  "train_loss": 0.6256744951242581,
+  "train_loss": 0.6256744984537363,
   "validation_accuracy": 0.6875,
   "validation_confusion_matrix": [
     [
@@ -21,5 +21,5 @@
     "NO_LUNG_OPACITY",
     "PNEUMONIA"
   ],
-  "warning": "Small validation subset; not clinical performance."
+  "warning": "Small validation subset; not clinical performance. Educational demonstration only."
 }
