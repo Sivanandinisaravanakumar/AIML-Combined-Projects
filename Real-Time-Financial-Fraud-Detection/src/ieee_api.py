@@ -9,7 +9,9 @@ import uuid
 import threading
 import subprocess
 
-from kafka import KafkaProducer
+from kafka import KafkaProducer, KafkaConsumer
+from collections import deque
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -134,6 +136,113 @@ store = initialize_feast()
 # --------------------------------------------------
 
 KAFKA_TOPIC = "fraud-transactions"
+
+# --------------------------------------------------
+# KAFKA LIVE DASHBOARD CONSUMER
+# --------------------------------------------------
+
+dashboard_consumer = None
+dashboard_consumer_lock = threading.Lock()
+dashboard_poll_lock = threading.Lock()
+dashboard_transactions = deque(maxlen=500)
+
+
+def get_dashboard_consumer():
+    global dashboard_consumer
+
+    if os.getenv("KAFKA_DISABLED", "0") == "1":
+        return None
+
+    if dashboard_consumer is not None:
+        return dashboard_consumer
+
+    with dashboard_consumer_lock:
+        if dashboard_consumer is not None:
+            return dashboard_consumer
+
+        try:
+            bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+            username = os.getenv("KAFKA_SASL_USERNAME")
+            password = os.getenv("KAFKA_SASL_PASSWORD")
+
+            if not all([bootstrap_servers, username, password]):
+                raise ValueError("Missing Kafka environment variables")
+
+            config = {
+                "bootstrap_servers": [
+                    server.strip()
+                    for server in bootstrap_servers.split(",")
+                    if server.strip()
+                ],
+                "security_protocol": os.getenv(
+                    "KAFKA_SECURITY_PROTOCOL", "SASL_SSL"
+                ),
+                "sasl_mechanism": os.getenv(
+                    "KAFKA_SASL_MECHANISM", "SCRAM-SHA-256"
+                ),
+                "sasl_plain_username": username,
+                "sasl_plain_password": password,
+                "group_id": "fraud-vercel-dashboard",
+                "auto_offset_reset": "earliest",
+                "enable_auto_commit": True,
+                "request_timeout_ms": 15000,
+            }
+
+            ca_file = os.getenv("KAFKA_SSL_CAFILE")
+            if ca_file:
+                if not os.path.isfile(ca_file):
+                    raise FileNotFoundError("Kafka CA certificate file not found")
+                config["ssl_cafile"] = ca_file
+
+            dashboard_consumer = KafkaConsumer(
+                KAFKA_TOPIC,
+                **config
+            )
+
+            print("Dashboard Kafka consumer initialized")
+            return dashboard_consumer
+
+        except Exception as exc:
+            dashboard_consumer = None
+            print("Dashboard Kafka consumer error:", repr(exc))
+            return None
+
+
+def collect_dashboard_messages():
+    consumer = get_dashboard_consumer()
+
+    if consumer is None:
+        return False
+
+    try:
+        with dashboard_poll_lock:
+            records = consumer.poll(timeout_ms=200, max_records=100)
+
+            for messages in records.values():
+                for record in messages:
+                    try:
+                        message = record.value
+
+                        if isinstance(message, bytes):
+                            message = json.loads(message.decode("utf-8"))
+                        elif isinstance(message, str):
+                            message = json.loads(message)
+
+                        message["received_at"] = datetime.now(
+                            timezone.utc
+                        ).isoformat()
+
+                        dashboard_transactions.append(message)
+
+                    except Exception as exc:
+                        print("Invalid Kafka dashboard message:", repr(exc))
+
+        return True
+
+    except Exception as exc:
+        print("Kafka dashboard polling error:", repr(exc))
+        return False
+
 
 producer = None
 producer_lock = threading.Lock()
@@ -343,6 +452,46 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --------------------------------------------------
+# DASHBOARD API
+# --------------------------------------------------
+
+@app.get("/dashboard/stats")
+def dashboard_stats():
+    kafka_connected = collect_dashboard_messages()
+    transactions = list(dashboard_transactions)
+
+    fraud_count = sum(
+        1 for item in transactions
+        if str(item.get("label", "")).upper() == "FRAUD"
+        or item.get("prediction") == 1
+    )
+
+    normal_count = sum(
+        1 for item in transactions
+        if str(item.get("label", "")).upper() == "NORMAL"
+        or item.get("prediction") == 0
+    )
+
+    return {
+        "kafka_connected": kafka_connected,
+        "total_transactions": len(transactions),
+        "fraud_transactions": fraud_count,
+        "normal_transactions": normal_count,
+        "recent_transactions": list(reversed(transactions))[:20]
+    }
+
+
+@app.get("/dashboard/transactions")
+def dashboard_transactions_api():
+    kafka_connected = collect_dashboard_messages()
+
+    return {
+        "kafka_connected": kafka_connected,
+        "transactions": list(reversed(dashboard_transactions))[:50]
+    }
 
 
 # --------------------------------------------------
