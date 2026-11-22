@@ -57,6 +57,20 @@ table{width:100%;border-collapse:collapse;font-size:14px}
 th{font-weight:500;color:var(--muted);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
 td{padding:7px 8px;border-bottom:1px solid var(--line)}
 td.FRAUD{color:var(--fraud);font-weight:700}td.NORMAL{color:var(--ok);font-weight:700}
+
+/* Live Kafka dashboard */
+.live-dashboard{margin:0 0 28px}
+.live-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0 20px}
+.live-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.live-card small{display:block;color:var(--muted);font-size:13px}
+.live-card strong{display:block;font-size:28px;margin-top:5px}
+.live-status{font-size:13px;color:var(--muted);margin:5px 0 12px}
+.live-status.up{color:var(--ok)}
+.live-status.down{color:var(--fraud)}
+.live-table{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.live-table h2{margin-bottom:10px}
+@media(max-width:650px){.live-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
 </style>
 </head>
 <body>
@@ -65,6 +79,28 @@ td.FRAUD{color:var(--fraud);font-weight:700}td.NORMAL{color:var(--ok);font-weigh
   <h1>Fraud scoring console</h1>
   <div class="health" id="health" role="status"><b></b><span>Checking backend…</span></div>
 </header>
+
+<section class="live-dashboard" id="live-dashboard" aria-live="polite">
+  <h2>Live Kafka Monitoring</h2>
+  <p class="live-status" id="kafka-status">Connecting to Kafka dashboard...</p>
+  <div class="live-cards">
+    <div class="live-card"><small>Total transactions</small><strong id="live-total">--</strong></div>
+    <div class="live-card"><small>Fraud transactions</small><strong id="live-fraud">--</strong></div>
+    <div class="live-card"><small>Normal transactions</small><strong id="live-normal">--</strong></div>
+    <div class="live-card"><small>Recent records</small><strong id="live-recent">--</strong></div>
+  </div>
+  <div class="live-table">
+    <h2>Recent Kafka Transactions</h2>
+    <p class="tally" id="live-updated">Waiting for transaction data...</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Transaction ID</th><th>Amount</th><th>Probability</th><th>Result</th><th>Model</th></tr></thead>
+        <tbody id="live-rows"><tr><td colspan="5">Waiting for Kafka messages...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
 <main>
   <form id="f">
     <h2>Score a transaction</h2>
@@ -170,6 +206,86 @@ document.querySelectorAll(".presets button").forEach(b=>b.addEventListener("clic
   $("card").value=b.dataset.k;$("amt").value=b.dataset.a;$("f").requestSubmit();
 }));
 health();
+
+// --------------------------------------------------
+// LIVE KAFKA DASHBOARD
+// --------------------------------------------------
+
+function addCell(row, value, className) {
+  const cell = document.createElement("td");
+  cell.textContent = value == null ? "-" : String(value);
+  if (className) cell.className = className;
+  row.appendChild(cell);
+}
+
+async function refreshLiveDashboard() {
+  const status = $("kafka-status");
+
+  try {
+    const response = await fetch(API + "/dashboard/stats", {
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      throw new Error("Dashboard API returned HTTP " + response.status);
+    }
+
+    const data = await response.json();
+
+    $("live-total").textContent = data.total_transactions ?? 0;
+    $("live-fraud").textContent = data.fraud_transactions ?? 0;
+    $("live-normal").textContent = data.normal_transactions ?? 0;
+
+    const transactions = data.recent_transactions || [];
+    $("live-recent").textContent = transactions.length;
+
+    status.textContent = data.kafka_connected
+      ? "Kafka connected • Live monitoring active"
+      : "Kafka connection unavailable • Retrying...";
+    status.className = "live-status " + (data.kafka_connected ? "up" : "down");
+
+    const tbody = $("live-rows");
+    tbody.replaceChildren();
+
+    if (transactions.length === 0) {
+      const row = document.createElement("tr");
+      addCell(row, "No transactions received yet", "");
+      const empty = document.createElement("td");
+      empty.colSpan = 4;
+      row.appendChild(empty);
+      tbody.appendChild(row);
+    } else {
+      transactions.forEach(item => {
+        const row = document.createElement("tr");
+        const raw = item.raw_features || {};
+        const label = item.label || "UNKNOWN";
+        const probability = Number(item.fraud_probability);
+
+        addCell(row, item.transaction_id || "-", "");
+        addCell(row, raw.TransactionAmt ?? "-", "");
+        addCell(
+          row,
+          Number.isFinite(probability) ? (probability * 100).toFixed(1) + "%" : "-",
+          ""
+        );
+        addCell(row, label, label);
+        addCell(row, item.model || "-", "");
+        tbody.appendChild(row);
+      });
+    }
+
+    $("live-updated").textContent =
+      "Last refreshed: " + new Date().toLocaleTimeString();
+
+  } catch (error) {
+    status.textContent = "Dashboard unavailable: " + error.message;
+    status.className = "live-status down";
+  }
+}
+
+refreshLiveDashboard();
+setInterval(refreshLiveDashboard, 5000);
+
 </script>
 </body>
 </html>
