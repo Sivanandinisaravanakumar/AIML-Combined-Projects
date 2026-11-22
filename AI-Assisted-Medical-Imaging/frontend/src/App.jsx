@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 
 // Docker backend runs on port 8000
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8765";
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 async function api(path, options) {
   const res = await fetch(`${API}${path}`, options);
@@ -559,3 +559,4 @@ function Bar({ name, v }) {
     </div>
   );
 }
+
