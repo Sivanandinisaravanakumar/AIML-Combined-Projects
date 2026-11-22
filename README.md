@@ -1,4 +1,3 @@
-﻿# AIML Combined Projects
 # AIML Combined Projects
 
 A collection of two end-to-end AI/ML prototypes covering **financial fraud detection** and **medical imaging diagnosis**, built with production-style tooling such as FastAPI, Kafka, Feast, Docker, DVC, and cloud deployment.
